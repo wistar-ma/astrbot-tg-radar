@@ -57,9 +57,11 @@ class TgRadar(Star):
         self._listener_task = None
         self._enroll_task = None
         self._qr_png_b64 = ""
+        self._qr_url = ""
         self._enroll_status = "idle"
         try:
             self.context.register_web_api("/tg_radar/qr", self.api_qr_page, ["GET"], "tg radar qr page")
+            self.context.register_web_api("/tg_radar/qrpage", self.api_qr_html, ["GET"], "tg radar qr html page")
             self.context.register_web_api("/tg_radar/enroll", self.api_enroll, ["POST", "GET"], "tg radar enroll")
             self.context.register_web_api("/tg_radar/status", self.api_status, ["GET"], "tg radar status")
         except Exception as e:
@@ -286,6 +288,7 @@ class TgRadar(Star):
         try:
             while True:
                 qr = await client.qr_login()
+                self._qr_url = qr.url
                 img = qrcode.make(qr.url)
                 buf = io.BytesIO()
                 img.save(buf, format="PNG")
@@ -344,6 +347,7 @@ class TgRadar(Star):
             "enroll_status": self._enroll_status,
             "user": self.state.get("user", ""),
             "qr_png_b64": self._qr_png_b64,
+            "qr_url": self._qr_url,
         })
 
     async def api_enroll(self):
@@ -367,6 +371,31 @@ class TgRadar(Star):
             "hits": self.state.get("hits", 0),
             "session_exists": os.path.exists(self.session_path + ".session"),
         })
+
+    async def api_qr_html(self):
+        args = await self._req_args()
+        if not self._check_token(args):
+            return error_response("forbidden", status=403)
+        from quart import Response as QuartResponse
+        if self._enroll_status == "login_ok" or self.state.get("user"):
+            body = ("<html><head><meta charset='utf-8'></head><body style='font-family:sans-serif;"
+                    "text-align:center;padding:40px'><h2>已登录：" + (self.state.get("user") or "") +
+                    "</h2><p>监听已启动，可关闭本页。</p></body></html>")
+            return QuartResponse(body, status=200, content_type="text/html; charset=utf-8")
+        img = ""
+        if self._qr_png_b64:
+            img = f"<img src='data:image/png;base64,{self._qr_png_b64}' style='width:300px;height:300px'/>"
+        body = (
+            "<html><head><meta charset='utf-8'><meta http-equiv='refresh' content='3'>"
+            "<title>TG监听登录</title></head>"
+            "<body style='font-family:sans-serif;text-align:center;padding:24px'>"
+            "<h2>Telegram 监听会话登录（138号）</h2>"
+            "<p>用 Telegram 扫码：设置 → 设备 → 连接桌面设备</p>"
+            + img +
+            f"<p>状态：{self._enroll_status}（页面每3秒自动刷新，二维码始终最新）</p>"
+            "</body></html>"
+        )
+        return QuartResponse(body, status=200, content_type="text/html; charset=utf-8")
 
     # ---------- chat commands ----------
     @filter.command("radar_bind")
