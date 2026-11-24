@@ -14,7 +14,7 @@ try:
     from astrbot.api.event import filter, AstrMessageEvent
     from astrbot.api.message_components import Plain
     from astrbot.core.message.message_event_result import MessageChain
-    from astrbot.api.web import request as web_request, Response as WebResponse
+    from astrbot.api.web import request as web_request, json_response, error_response
     try:
         from astrbot.api.star import StarTools
     except Exception:
@@ -24,7 +24,7 @@ except Exception:
     from astrbot.api.event import filter, AstrMessageEvent  # type: ignore
     from astrbot.api.message_components import Plain  # type: ignore
     from astrbot.core.message.message_event_result import MessageChain  # type: ignore
-    from astrbot.api.web import request as web_request, Response as WebResponse  # type: ignore
+    from astrbot.api.web import request as web_request, json_response, error_response  # type: ignore
     StarTools = None
 
 STRONG = ["免费领取", "限时免费", "免费送", "免费领", "抽奖", "赠送", "白嫖", "0元",
@@ -338,47 +338,35 @@ class TgRadar(Star):
     async def api_qr_page(self):
         args = await self._req_args()
         if not self._check_token(args):
-            return WebResponse("forbidden", status=403)
-        if self._enroll_status == "login_ok" or self.state.get("user"):
-            body = "<html><head><meta charset='utf-8'></head><body style='font-family:sans-serif;text-align:center;padding:40px'><h2>已登录：" + (self.state.get("user") or "") + "</h2><p>监听启动中，可关闭本页。</p></body></html>"
-            return WebResponse(body, status=200, content_type="text/html; charset=utf-8")
-        img = ""
-        if self._qr_png_b64:
-            img = f"<img src='data:image/png;base64,{self._qr_png_b64}' style='width:300px;height:300px'/>"
-        body = (
-            "<html><head><meta charset='utf-8'><meta http-equiv='refresh' content='5'>"
-            "<title>TG监听登录</title></head>"
-            "<body style='font-family:sans-serif;text-align:center;padding:24px'>"
-            "<h2>Telegram 监听会话登录（138号）</h2>"
-            "<p>用 Telegram 扫码：设置 → 设备 → 连接桌面设备</p>"
-            + img +
-            f"<p>状态：{self._enroll_status}（页面每5秒自动刷新）</p>"
-            "</body></html>"
-        )
-        return WebResponse(body, status=200, content_type="text/html; charset=utf-8")
+            return error_response("forbidden", status=403)
+        return json_response({
+            "ok": True,
+            "enroll_status": self._enroll_status,
+            "user": self.state.get("user", ""),
+            "qr_png_b64": self._qr_png_b64,
+        })
 
     async def api_enroll(self):
         args = await self._req_args()
         if not self._check_token(args):
-            return WebResponse(json.dumps({"ok": False, "error": "forbidden"}), status=403, content_type="application/json")
+            return error_response("forbidden", status=403)
         if not self._enroll_task or self._enroll_task.done():
             try:
                 loop = asyncio.get_event_loop()
                 self._enroll_task = loop.create_task(self._enroll_loop())
             except Exception as e:
-                return WebResponse(json.dumps({"ok": False, "error": str(e)}), status=500, content_type="application/json")
-        return WebResponse(json.dumps({"ok": True, "status": self._enroll_status}), status=200, content_type="application/json")
+                return error_response(str(e), status=500)
+        return json_response({"ok": True, "status": self._enroll_status})
 
     async def api_status(self):
-        data = {
+        return json_response({
             "ok": True,
             "enroll_status": self._enroll_status,
             "user": self.state.get("user", ""),
             "alert_bound": bool(self.state.get("alert_origin")),
             "hits": self.state.get("hits", 0),
             "session_exists": os.path.exists(self.session_path + ".session"),
-        }
-        return WebResponse(json.dumps(data, ensure_ascii=False), status=200, content_type="application/json")
+        })
 
     # ---------- chat commands ----------
     @filter.command("radar_bind")
