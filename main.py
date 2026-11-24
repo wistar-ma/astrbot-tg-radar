@@ -258,6 +258,10 @@ class TgRadar(Star):
                                 cid = cid[4:]
                             link = f"https://t.me/c/{cid}/{event.id}"
                         self.state["hits"] = int(self.state.get("hits", 0)) + 1
+                        hist = self.state.setdefault("recent_hits", [])
+                        hist.append({"ts": int(time.time()), "chat": title, "link": link,
+                                     "score": score, "text": text[:300]})
+                        self.state["recent_hits"] = hist[-20:]
                         self._save_state()
                         alert = (
                             "🎁 TG福利命中\n"
@@ -377,6 +381,7 @@ class TgRadar(Star):
             "alert_bound": bool(self.state.get("alert_origin")),
             "hits": self.state.get("hits", 0),
             "session_exists": os.path.exists(self.session_path + ".session"),
+            "recent_hits": self.state.get("recent_hits", []),
         })
 
     async def api_qr_html(self):
