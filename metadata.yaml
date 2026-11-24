@@ -1,5 +1,5 @@
 name: tg_radar
 display_name: TG福利雷达
 desc: 用用户自己的TG账号会话实时监听所有群/频道，命中免费福利后推送到绑定会话
-version: 1.2.2
+version: 1.2.3
 author: wistar
