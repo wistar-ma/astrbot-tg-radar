@@ -34,7 +34,7 @@ WEAK = ["免费", "福利", "优惠", "折扣", "促销", "活动", "领取", "�
 EXCLUDE = ["求购", "收购", "出售", "转让", "出一个", "卖号", "招聘", "广告"]
 
 
-@register("tg_radar", "wistar", "TG福利雷达：实时监听TG群消息，命中免费福利推送到微信", "1.0.0")
+@register("tg_radar", "wistar", "TG福利雷达：实时监听TG群消息，命中免费福利推送到微信", "1.2.0")
 class TgRadar(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -128,6 +128,21 @@ class TgRadar(Star):
             score += 1
             hits.append("带时限")
         return score, hits
+
+    def _freeradar_score(self, text):
+        """freebie-radar pushes carry their own 0-100 score in a fixed format:
+        header '🎁 真福利精选 · [真福利直推] 高分 85' and per-item '... · 85 分'.
+        Returns the best score found, or None when the format does not match."""
+        if "真福利精选" not in text:
+            return None
+        scores = []
+        for m in re.finditer(r"高分\s*(\d{1,3})", text):
+            scores.append(int(m.group(1)))
+        for m in re.finditer(r"·\s*(\d{1,3})\s*分", text):
+            scores.append(int(m.group(1)))
+        if not scores:
+            return None
+        return max(0, min(100, max(scores)))
 
     async def _ai_score(self, text):
         """Score 0-100: is this a real, claimable free benefit for a mainland-China user?
@@ -225,10 +240,26 @@ class TgRadar(Star):
         if self._listener_task and not self._listener_task.done():
             return
         try:
-            loop = asyncio.get_event_loop()
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.get_event_loop()
             self._listener_task = loop.create_task(self._listener_loop())
         except Exception as e:
             print(f"[tg_radar] start listener failed: {e}", flush=True)
+
+    async def terminate(self):
+        try:
+            if self.client:
+                await self.client.disconnect()
+        except Exception:
+            pass
+        for t in (self._listener_task, self._enroll_task):
+            try:
+                if t and not t.done():
+                    t.cancel()
+            except Exception:
+                pass
 
     async def _listener_loop(self):
         from telethon import TelegramClient, events
@@ -236,6 +267,7 @@ class TgRadar(Star):
         if not api_id or not api_hash:
             print("[tg_radar] api_id/api_hash not configured", flush=True)
             return
+        self._enroll_status = "starting"
         while True:
             try:
                 client = TelegramClient(self.session_path, api_id, api_hash)
@@ -270,13 +302,24 @@ class TgRadar(Star):
                             self.state["seen"] = seen[-800:]
                         self._save_state()
                         rules_score, hits = self._rules_score(text)
-                        min_score = int(self._cfg("min_score", 3) or 3)
-                        if rules_score < min_score:
-                            return
-                        ai_score, reason = await self._ai_score(text)
-                        if ai_score is None:
-                            ai_score = 70 if rules_score >= 5 else (60 if rules_score == 4 else 50)
-                            reason = "AI 未返回，规则估分"
+                        src = ""
+                        fr_score = self._freeradar_score(text)
+                        if fr_score is not None:
+                            sender = await event.get_sender()
+                            if not sender or getattr(sender, "username", None) != "treemail_bot":
+                                fr_score = None
+                        if fr_score is not None:
+                            # Merged single entry point: freebie-radar is now just a
+                            # source feeder; trust the score it already computed.
+                            ai_score, reason, src = fr_score, "老雷达（freebie-radar）评分", "freebie-radar"
+                        else:
+                            min_score = int(self._cfg("min_score", 3) or 3)
+                            if rules_score < min_score:
+                                return
+                            ai_score, reason = await self._ai_score(text)
+                            if ai_score is None:
+                                ai_score = 70 if rules_score >= 5 else (60 if rules_score == 4 else 50)
+                                reason = "AI 未返回，规则估分"
                         threshold = int(self._cfg("claim_threshold", 65) or 65)
                         chat = await event.get_chat()
                         title = getattr(chat, "title", None) or getattr(chat, "username", None) or str(event.chat_id)
@@ -315,6 +358,7 @@ class TgRadar(Star):
                         hist = self.state.setdefault("recent_hits", [])
                         hist.append({"ts": int(time.time()), "chat": title, "link": link,
                                      "score": ai_score, "rules": rules_score, "reason": reason,
+                                     "src": src,
                                      "verdict": verdict, "action": action, "text": text[:300]})
                         self.state["recent_hits"] = hist[-20:]
                         self._save_state()
