@@ -1,0 +1,22 @@
+{
+  "api_id": {
+    "description": "Telegram API ID（my.telegram.org 申请的 app）",
+    "type": "string",
+    "default": ""
+  },
+  "api_hash": {
+    "description": "Telegram API Hash",
+    "type": "string",
+    "default": ""
+  },
+  "page_token": {
+    "description": "扫码登录页的访问口令（拼在网址后面）",
+    "type": "string",
+    "default": ""
+  },
+  "min_score": {
+    "description": "规则命中最低分（越高越安静）",
+    "type": "int",
+    "default": 3
+  }
+}
