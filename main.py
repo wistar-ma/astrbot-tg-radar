@@ -32,9 +32,17 @@ STRONG = ["免费领取", "限时免费", "免费送", "免费领", "抽奖", "�
           "giveaway", "free game", "free trial", "airdrop"]
 WEAK = ["免费", "福利", "优惠", "折扣", "促销", "活动", "领取", "秒杀", "特价", "free"]
 EXCLUDE = ["求购", "收购", "出售", "转让", "出一个", "卖号", "招聘", "广告"]
+# 黄赌毒硬过滤（用户 2026-11-25 定版：黄赌毒直接忽略）：命中任一词直接忽略——
+# 不调 AI 评分、不尝试领取、不推送，只记一条 score=0 的 dropped 记录供审查计数。
+BLOCKED = ["博彩", "赌博", "赌场", "网赌", "赌球", "娱乐城", "彩金", "体验金",
+           "棋牌", "百家乐", "老虎机", "六合彩", "时时彩", "下注", "盘口",
+           "首充", "洗码", "银河国际",
+           "约炮", "外围女", "外围模特", "探花", "裸聊", "情色", "黄片",
+           "卖淫", "嫖娼", "楼凤",
+           "冰毒", "大麻", "麻古", "摇头丸", "海洛因", "可卡因", "毒品", "吸毒"]
 
 
-@register("tg_radar", "wistar", "TG福利雷达：实时监听TG群消息，命中免费福利推送到微信", "1.2.0")
+@register("tg_radar", "wistar", "TG福利雷达：实时监听TG群消息，命中免费福利推送到微信", "1.2.2")
 class TgRadar(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -128,6 +136,20 @@ class TgRadar(Star):
             score += 1
             hits.append("带时限")
         return score, hits
+
+    def _blocked_word(self, text):
+        for w in BLOCKED:
+            if w in text:
+                return w
+        return ""
+
+    def _desc(self, reason, text):
+        """推送里给用户看的一句话说明（参考老福利程序的 💡 一行式）：
+        AI 给了真实说明就用它；AI 未返回/失败时用原文摘录，让用户一眼看懂是什么。"""
+        bad = ("AI 未返回", "解析失败", "评分失败", "无可用模型", "老雷达")
+        if reason and not any(b in reason for b in bad):
+            return reason
+        return re.sub(r"\s+", " ", text).strip()[:90]
 
     def _freeradar_score(self, text):
         """freebie-radar pushes carry their own 0-100 score in a fixed format:
@@ -302,6 +324,29 @@ class TgRadar(Star):
                             self.state["seen"] = seen[-800:]
                         self._save_state()
                         rules_score, hits = self._rules_score(text)
+                        chat = await event.get_chat()
+                        title = getattr(chat, "title", None) or getattr(chat, "username", None) or str(event.chat_id)
+                        username = getattr(chat, "username", None)
+                        if username:
+                            link = f"https://t.me/{username}/{event.id}"
+                        else:
+                            cid = str(event.chat_id)
+                            if cid.startswith("-100"):
+                                cid = cid[4:]
+                            link = f"https://t.me/c/{cid}/{event.id}"
+                        blocked = self._blocked_word(text)
+                        if blocked:
+                            self.state["hits"] = int(self.state.get("hits", 0)) + 1
+                            hist = self.state.setdefault("recent_hits", [])
+                            hist.append({"ts": int(time.time()), "chat": title, "link": link,
+                                         "score": 0, "rules": rules_score,
+                                         "reason": f"黄赌毒硬过滤（命中「{blocked}」），直接忽略",
+                                         "src": "",
+                                         "verdict": "dropped", "action": "黄赌毒硬过滤（未处理）",
+                                         "text": text[:300]})
+                            self.state["recent_hits"] = hist[-20:]
+                            self._save_state()
+                            return
                         src = ""
                         fr_score = self._freeradar_score(text)
                         if fr_score is not None:
@@ -321,27 +366,18 @@ class TgRadar(Star):
                                 ai_score = 70 if rules_score >= 5 else (60 if rules_score == 4 else 50)
                                 reason = "AI 未返回，规则估分"
                         threshold = int(self._cfg("claim_threshold", 65) or 65)
-                        chat = await event.get_chat()
-                        title = getattr(chat, "title", None) or getattr(chat, "username", None) or str(event.chat_id)
-                        username = getattr(chat, "username", None)
-                        if username:
-                            link = f"https://t.me/{username}/{event.id}"
-                        else:
-                            cid = str(event.chat_id)
-                            if cid.startswith("-100"):
-                                cid = cid[4:]
-                            link = f"https://t.me/c/{cid}/{event.id}"
                         if ai_score < threshold:
                             verdict, action, alert = "dropped", "低分忽略（未处理）", None
                         else:
                             action = await self._try_claim(event)
                             verdict = "claimed" if action.startswith("已自动点击") else "manual_needed"
+                            desc = self._desc(reason, text)
                             if verdict == "claimed":
                                 alert = (
                                     "✅ 福利已领取\n"
                                     f"群：{title}\n"
                                     f"评分：{ai_score}分\n"
-                                    f"福利：{reason}\n"
+                                    f"💡 {desc}\n"
                                     f"处理：{action}\n"
                                     f"链接：{link}\n"
                                 )
@@ -350,7 +386,7 @@ class TgRadar(Star):
                                     "⚠️ 福利需要你手动领取（重点提醒）\n"
                                     f"群：{title}\n"
                                     f"评分：{ai_score}分\n"
-                                    f"福利：{reason}\n"
+                                    f"💡 {desc}\n"
                                     f"原因：{action}\n"
                                     f"链接：{link}\n"
                                 )
