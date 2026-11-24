@@ -129,27 +129,29 @@ class TgRadar(Star):
             hits.append("带时限")
         return score, hits
 
-    async def _llm_judge(self, text):
-        """Use AstrBot's configured LLM if available; return True/False/None."""
+    async def _ai_score(self, text):
+        """Score 0-100: is this a real, claimable free benefit for a mainland-China user?
+        Returns (score:int|None, reason:str)."""
         try:
             llm = getattr(self.context, "llm_generate", None)
             if llm is None:
-                return None
+                return None, "无可用模型"
             prompt = (
-                "判断下面这条 Telegram 群消息是不是一个真实可领取的免费福利"
-                "（免费游戏/免费服务/抽奖/赠送/限时免费等），且中国大陆用户能用。"
-                "只回答 JSON：{\"hit\": true/false, \"reason\": \"一句话\"}\n\n消息：\n" + text[:1200]
+                "给下面这条 Telegram 群消息打分（0-100），判断它是不是一个真实、可领取、且中国大陆用户能用的免费福利。\n"
+                "高分（70+）：明确的免费游戏/免费服务/免费 VPS/免费额度/抽奖/赠送，有清楚的领取入口。\n"
+                "低分（30 以下）：只是提问、讨论、晒图、付费广告、需要美国运营商/美国地址/美国支付的福利、地区锁定无法参与的活动。\n"
+                "只回答 JSON：{\"score\": 数字, \"reason\": \"一句话说明是什么福利\"}\n\n消息：\n" + text[:1200]
             )
             resp = await llm(prompt=prompt)
             content = getattr(resp, "completion_text", None) or str(resp)
             m = re.search(r"\{.*\}", content, re.S)
             if m:
                 data = json.loads(m.group(0))
-                return bool(data.get("hit"))
-            return None
+                return int(data.get("score", 0)), str(data.get("reason", ""))[:120]
+            return None, "解析失败"
         except Exception as e:
-            print(f"[tg_radar] llm judge failed: {e}", flush=True)
-            return None
+            print(f"[tg_radar] ai score failed: {e}", flush=True)
+            return None, f"评分失败：{e}"
 
     def _alert_targets(self):
         targets = []
@@ -267,15 +269,15 @@ class TgRadar(Star):
                         if len(seen) > 800:
                             self.state["seen"] = seen[-800:]
                         self._save_state()
-                        score, hits = self._rules_score(text)
+                        rules_score, hits = self._rules_score(text)
                         min_score = int(self._cfg("min_score", 3) or 3)
-                        if score < min_score:
+                        if rules_score < min_score:
                             return
-                        if score < 5:
-                            verdict = await self._llm_judge(text)
-                            if verdict is False:
-                                return
-                        action = await self._try_claim(event)
+                        ai_score, reason = await self._ai_score(text)
+                        if ai_score is None:
+                            ai_score = 70 if rules_score >= 5 else (60 if rules_score == 4 else 50)
+                            reason = "AI 未返回，规则估分"
+                        threshold = int(self._cfg("claim_threshold", 65) or 65)
                         chat = await event.get_chat()
                         title = getattr(chat, "title", None) or getattr(chat, "username", None) or str(event.chat_id)
                         username = getattr(chat, "username", None)
@@ -286,21 +288,38 @@ class TgRadar(Star):
                             if cid.startswith("-100"):
                                 cid = cid[4:]
                             link = f"https://t.me/c/{cid}/{event.id}"
+                        if ai_score < threshold:
+                            verdict, action, alert = "dropped", "低分忽略（未处理）", None
+                        else:
+                            action = await self._try_claim(event)
+                            verdict = "claimed" if action.startswith("已自动点击") else "manual_needed"
+                            if verdict == "claimed":
+                                alert = (
+                                    "✅ 福利已领取\n"
+                                    f"群：{title}\n"
+                                    f"评分：{ai_score}分\n"
+                                    f"福利：{reason}\n"
+                                    f"处理：{action}\n"
+                                    f"链接：{link}\n"
+                                )
+                            else:
+                                alert = (
+                                    "⚠️ 福利需要你手动领取（重点提醒）\n"
+                                    f"群：{title}\n"
+                                    f"评分：{ai_score}分\n"
+                                    f"福利：{reason}\n"
+                                    f"原因：{action}\n"
+                                    f"链接：{link}\n"
+                                )
                         self.state["hits"] = int(self.state.get("hits", 0)) + 1
                         hist = self.state.setdefault("recent_hits", [])
                         hist.append({"ts": int(time.time()), "chat": title, "link": link,
-                                     "score": score, "text": text[:300], "action": action})
+                                     "score": ai_score, "rules": rules_score, "reason": reason,
+                                     "verdict": verdict, "action": action, "text": text[:300]})
                         self.state["recent_hits"] = hist[-20:]
                         self._save_state()
-                        alert = (
-                            "🎁 TG福利命中\n"
-                            f"群：{title}\n"
-                            f"命中词：{'、'.join(hits[:6])}（{score}分）\n"
-                            f"链接：{link}\n"
-                            f"处理：{action}\n"
-                            "原文：\n" + text[:600]
-                        )
-                        await self._alert(alert)
+                        if alert:
+                            await self._alert(alert)
                     except Exception as e:
                         print(f"[tg_radar] handler error: {e}", flush=True)
 
@@ -455,5 +474,5 @@ class TgRadar(Star):
 
     @filter.command("radar_test")
     async def radar_test(self, event: AstrMessageEvent):
-        ok = await self._alert("🎁 TG福利雷达测试推送：通道正常。以后 TG 群里命中免费福利会推到这里。")
+        ok = await self._alert("✅ 福利已领取（测试）\n群：测试\n评分：80分\n福利：测试推送\n处理：测试通过\n")
         yield event.plain_result("测试推送已发送到绑定目标。" if ok else "还没有可用的推送目标：请先在想接收的会话发 /radar_bind，或在目标会话用推送桥 /push_bind wx 绑定。")
