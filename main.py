@@ -183,6 +183,13 @@ class TgRadar(Star):
                 print(f"[tg_radar] send to {umo} failed: {e}", flush=True)
         return ok
 
+
+    def _err(self, msg, status=400):
+        try:
+            return error_response(msg, status=status)
+        except TypeError:
+            return error_response(msg)
+
     # ---------- listener ----------
     def _start_listener(self):
         if self._listener_task and not self._listener_task.done():
@@ -341,7 +348,7 @@ class TgRadar(Star):
     async def api_qr_page(self):
         args = await self._req_args()
         if not self._check_token(args):
-            return error_response("forbidden", status=403)
+            return self._err("forbidden", status=403)
         return json_response({
             "ok": True,
             "enroll_status": self._enroll_status,
@@ -353,13 +360,13 @@ class TgRadar(Star):
     async def api_enroll(self):
         args = await self._req_args()
         if not self._check_token(args):
-            return error_response("forbidden", status=403)
+            return self._err("forbidden", status=403)
         if not self._enroll_task or self._enroll_task.done():
             try:
                 loop = asyncio.get_event_loop()
                 self._enroll_task = loop.create_task(self._enroll_loop())
             except Exception as e:
-                return error_response(str(e), status=500)
+                return self._err(str(e), status=500)
         return json_response({"ok": True, "status": self._enroll_status})
 
     async def api_status(self):
@@ -375,7 +382,7 @@ class TgRadar(Star):
     async def api_qr_html(self):
         args = await self._req_args()
         if not self._check_token(args):
-            return error_response("forbidden", status=403)
+            return self._err("forbidden", status=403)
         from quart import Response as QuartResponse
         if self._enroll_status == "login_ok" or self.state.get("user"):
             body = ("<html><head><meta charset='utf-8'></head><body style='font-family:sans-serif;"
