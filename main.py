@@ -42,7 +42,7 @@ BLOCKED = ["博彩", "赌博", "赌场", "网赌", "赌球", "娱乐城", "彩�
            "冰毒", "大麻", "麻古", "摇头丸", "海洛因", "可卡因", "毒品", "吸毒"]
 
 
-@register("tg_radar", "wistar", "TG福利雷达：实时监听TG群消息，命中免费福利推送到微信", "1.2.2")
+@register("tg_radar", "wistar", "TG福利雷达：实时监听TG群消息，命中免费福利推送到微信", "1.2.3")
 class TgRadar(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -173,13 +173,26 @@ class TgRadar(Star):
             llm = getattr(self.context, "llm_generate", None)
             if llm is None:
                 return None, "无可用模型"
+            # AstrBot 4.29 的 llm_generate 必须带 chat_provider_id（必填参数），
+            # 只传 prompt 每次都抛 TypeError 被 except 吞掉，AI 评分从未真正跑过。
+            pid = ""
+            try:
+                prov = self.context.get_using_provider()
+                if prov is not None:
+                    pid = prov.meta().id
+            except Exception:
+                pid = ""
+            if not pid:
+                pid = "gateway"
             prompt = (
                 "给下面这条 Telegram 群消息打分（0-100），判断它是不是一个真实、可领取、且中国大陆用户能用的免费福利。\n"
                 "高分（70+）：明确的免费游戏/免费服务/免费 VPS/免费额度/抽奖/赠送，有清楚的领取入口。\n"
                 "低分（30 以下）：只是提问、讨论、晒图、付费广告、需要美国运营商/美国地址/美国支付的福利、地区锁定无法参与的活动。\n"
                 "只回答 JSON：{\"score\": 数字, \"reason\": \"一句话说明是什么福利\"}\n\n消息：\n" + text[:1200]
             )
-            resp = await llm(prompt=prompt)
+            resp = await asyncio.wait_for(
+                llm(chat_provider_id=pid, prompt=prompt), timeout=90
+            )
             content = getattr(resp, "completion_text", None) or str(resp)
             m = re.search(r"\{.*\}", content, re.S)
             if m:
@@ -364,7 +377,7 @@ class TgRadar(Star):
                             ai_score, reason = await self._ai_score(text)
                             if ai_score is None:
                                 ai_score = 70 if rules_score >= 5 else (60 if rules_score == 4 else 50)
-                                reason = "AI 未返回，规则估分"
+                                reason = f"AI 未返回（{reason}），规则估分"[:100]
                         threshold = int(self._cfg("claim_threshold", 65) or 65)
                         if ai_score < threshold:
                             verdict, action, alert = "dropped", "低分忽略（未处理）", None
