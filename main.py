@@ -190,6 +190,34 @@ class TgRadar(Star):
         except TypeError:
             return error_response(msg)
 
+
+    async def _try_claim(self, event):
+        """If the hit message carries a participation/claim callback button,
+        click it with the listener account and report what happened."""
+        CLAIM_WORDS = ["参与", "抽奖", "领取", "报名", "参加", "加入", "抽", "enter", "join", "claim"]
+        try:
+            msg = event.message
+            rows = getattr(msg, "buttons", None) or []
+            for r, row in enumerate(rows):
+                for c, btn in enumerate(row):
+                    if getattr(btn, "url", None):
+                        continue  # link buttons are for the owner to open
+                    text = (getattr(btn, "text", "") or "").strip()
+                    if not text:
+                        continue
+                    low = text.lower()
+                    if any(w in low for w in CLAIM_WORDS):
+                        res = await msg.click(r, c)
+                        answer = ""
+                        try:
+                            answer = (getattr(res, "message", "") or "") if res is not None else ""
+                        except Exception:
+                            answer = ""
+                        return f"已自动点击「{text}」" + (f"：{answer}" if answer else "（无即时回执）")
+            return "仅通知（无可自动点的参与按钮，需本人处理）"
+        except Exception as e:
+            return f"自动领取失败：{e}"
+
     # ---------- listener ----------
     def _start_listener(self):
         if self._listener_task and not self._listener_task.done():
@@ -247,6 +275,7 @@ class TgRadar(Star):
                             verdict = await self._llm_judge(text)
                             if verdict is False:
                                 return
+                        action = await self._try_claim(event)
                         chat = await event.get_chat()
                         title = getattr(chat, "title", None) or getattr(chat, "username", None) or str(event.chat_id)
                         username = getattr(chat, "username", None)
@@ -260,7 +289,7 @@ class TgRadar(Star):
                         self.state["hits"] = int(self.state.get("hits", 0)) + 1
                         hist = self.state.setdefault("recent_hits", [])
                         hist.append({"ts": int(time.time()), "chat": title, "link": link,
-                                     "score": score, "text": text[:300]})
+                                     "score": score, "text": text[:300], "action": action})
                         self.state["recent_hits"] = hist[-20:]
                         self._save_state()
                         alert = (
@@ -268,6 +297,7 @@ class TgRadar(Star):
                             f"群：{title}\n"
                             f"命中词：{'、'.join(hits[:6])}（{score}分）\n"
                             f"链接：{link}\n"
+                            f"处理：{action}\n"
                             "原文：\n" + text[:600]
                         )
                         await self._alert(alert)
