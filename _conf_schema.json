@@ -18,5 +18,10 @@
     "description": "规则命中最低分（越高越安静）",
     "type": "int",
     "default": 3
+  },
+  "claim_threshold": {
+    "description": "AI 打分达到多少分才自动领取（默认 65）",
+    "type": "int",
+    "default": 65
   }
 }
